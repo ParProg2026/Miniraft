@@ -1,44 +1,23 @@
+// Package main implements the RPC handlers required for the Raft consensus protocol.
 package main
 
 import (
+	"log"
 	"math/rand"
-	"net"
 	miniraft "raft/protocol"
 	"time"
 )
 
-// handleAppendEntriesRequest processes an incoming AppendEntries RPC from a leader.
-// As per Raft (Figure 2 in raft.pdf / OngaroPhD.pdf):
-//  1. If request.Term < s.CurrentTerm, reply false immediately (reject stale leader).
-//  2. If the request.Term > s.CurrentTerm, update s.CurrentTerm, clear s.VotedFor, and become a Follower.
-//     Also, receiving this RPC (if term >= CurrentTerm) should reset the election timer.
-//  3. Reply false if the local log doesn't contain an entry at request.PrevLogIndex
-//     whose term matches request.PrevLogTerm (Log Matching Property).
-//  4. If an existing log entry conflicts with a new one (same index but different terms),
-//     delete the existing entry and all that follow it.
-//  5. Append any new entries not already in the log.
-//  6. If request.LeaderCommit > s.CommitIndex, set s.CommitIndex = min(request.LeaderCommit, index of last new entry).
-//  7. Finally, send an AppendEntriesResponse back to the leader (request.LeaderId) indicating success or failure.
-//
-// sendRaftMessage resolves the UDP address and sends a Raft message logic to the peer.
+// sendRaftMessage is a helper function that leverages the injected NetworkManager.
+// Using this prevents the system from opening redundant UDP sockets on every request.
 func (s *RaftServer) sendRaftMessage(peerAddr string, payload any) {
-	msg := &miniraft.RaftMessage{Message: payload}
-	data, err := msg.MarshalJson()
+	err := s.Network.SendRaftMessage(peerAddr, payload)
 	if err != nil {
-		return
+		log.Printf("Failed to send RPC to %s: %v\n", peerAddr, err)
 	}
-	addr, err := net.ResolveUDPAddr("udp", peerAddr)
-	if err != nil {
-		return
-	}
-	conn, err := net.DialUDP("udp", nil, addr)
-	if err != nil {
-		return
-	}
-	defer conn.Close()
-	conn.Write(data)
 }
 
+// handleAppendEntriesRequest processes an incoming AppendEntries RPC from a leader.
 func (s *RaftServer) handleAppendEntriesRequest(request *miniraft.AppendEntriesRequest) {
 	response := &miniraft.AppendEntriesResponse{
 		Term:    s.CurrentTerm,
@@ -57,8 +36,10 @@ func (s *RaftServer) handleAppendEntriesRequest(request *miniraft.AppendEntriesR
 		response.Term = s.CurrentTerm
 	}
 
-	// Receiving this RPC (if term >= CurrentTerm) should reset the election timer.
-	s.ElectionTimer.Reset(randomElectionTimeout())
+	// Safely reset the election timer if it exists.
+	if s.ElectionTimer != nil {
+		s.ElectionTimer.Reset(randomElectionTimeout())
+	}
 
 	// 3. Reply false if the local log doesn't contain an entry at request.PrevLogIndex
 	//    whose term matches request.PrevLogTerm. (Using 1-based log indexing logically)
@@ -80,8 +61,8 @@ func (s *RaftServer) handleAppendEntriesRequest(request *miniraft.AppendEntriesR
 		logIdx := request.PrevLogIndex + 1 + i // Logical 1-based index
 		if logIdx <= len(s.Log) {
 			if s.Log[logIdx-1].Term != entry.Term {
-				// Conflict: truncate the log at this index
-				s.Log = append([]miniraft.LogEntry(nil), s.Log[:logIdx-1]...) // safe truncate
+				// Conflict: truncate the log safely
+				s.Log = append([]miniraft.LogEntry(nil), s.Log[:logIdx-1]...)
 				s.Log = append(s.Log, entry)
 			}
 		} else {
@@ -90,7 +71,7 @@ func (s *RaftServer) handleAppendEntriesRequest(request *miniraft.AppendEntriesR
 		}
 	}
 
-	// 6. If request.LeaderCommit > s.CommitIndex, set s.CommitIndex = min(request.LeaderCommit, index of last new entry).
+	// 6. If request.LeaderCommit > s.CommitIndex, advance the CommitIndex.
 	if request.LeaderCommit > s.CommitIndex {
 		lastNewEntryIdx := request.PrevLogIndex + len(request.LogEntries)
 		s.CommitIndex = min(request.LeaderCommit, lastNewEntryIdx)
@@ -114,7 +95,7 @@ func (s *RaftServer) handleAppendEntriesRequest(request *miniraft.AppendEntriesR
 //   - Decrement nextIndex for that follower.
 //   - Retry the AppendEntries RPC with the new nextIndex and the corresponding entries.
 func (s *RaftServer) handleAppendEntriesResponse(response *miniraft.AppendEntriesResponse) {
-
+	// TODO: Implement logic to update matchIndex and nextIndex, and advance commitIndex.
 }
 
 // handleRequestVoteRequest processes an incoming RequestVote RPC from a Candidate.
@@ -130,7 +111,7 @@ func (s *RaftServer) handleAppendEntriesResponse(response *miniraft.AppendEntrie
 //  5. Otherwise, do not grant the vote (reply false).
 //  6. Send the RequestVoteResponse back to the candidate.
 func (s *RaftServer) handleRequestVoteRequest(request *miniraft.RequestVoteRequest) {
-
+	// TODO: Implement logic to grant or deny vote based on Term and log freshness.
 }
 
 // handleRequestVoteResponse processes a response to a RequestVote RPC sent by this node (Candidate).
@@ -143,24 +124,16 @@ func (s *RaftServer) handleRequestVoteRequest(request *miniraft.RequestVoteReque
 //     - Upon becoming Leader, immediately send empty AppendEntries RPCs (heartbeats) to all peers
 //     to establish authority and prevent new elections.
 func (s *RaftServer) handleRequestVoteResponse(response *miniraft.RequestVoteResponse) {
-
+	// TODO: Implement logic to tally votes and transition to Leader if majority reached.
 }
 
-// TODO: Implement Log Appending logic that writes to the persistent log file (e.g. `127-0-0-1-2000.log`).
+// sendAppendEntries builds and dispatches an AppendEntries Request to a specific peer.
 func (s *RaftServer) sendAppendEntries(peer string) {
-	// TODO: Implement AppendEntries RPC
+	// TODO: Construct miniraft.AppendEntriesRequest based on NextIndex and dispatch via s.sendRaftMessage
 }
 
-// randomElectionTimeout generates a random duration for the election timeout,
-// typically between 150ms and 300ms as recommended by the Raft paper.
+// randomElectionTimeout generates a randomized duration between 150ms and 300ms.
+// The randomness is crucial to prevent split votes during leader elections.
 func randomElectionTimeout() time.Duration {
 	return time.Duration(150+rand.Intn(150)) * time.Millisecond
-}
-
-// min returns the smaller of a or b.
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
