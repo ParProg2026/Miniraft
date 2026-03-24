@@ -81,6 +81,25 @@ func (s *RaftServer) handleAppendEntriesRequest(request *miniraft.AppendEntriesR
 	s.sendRaftMessage(request.LeaderId, response)
 }
 
+func (s *RaftServer) handleClientCommand(cmd *ClientCommand) {
+	if s.IsSuspended {
+		return
+	}
+
+	if s.State == Leader {
+		entry := miniraft.LogEntry{
+			Index:       len(s.Log) + 1,
+			Term:        s.CurrentTerm,
+			CommandName: cmd.Command,
+		}
+		s.Log = append(s.Log, entry)
+	}
+
+	if s.State == Follower {
+		// Forward command to leader
+	}
+}
+
 // handleAppendEntriesResponse processes a response to an AppendEntries RPC sent by this node (Leader).
 // As per Raft (Figure 2 in raft.pdf / OngaroPhD.pdf):
 // 1. If response.Term > s.CurrentTerm, update s.CurrentTerm, clear s.VotedFor, and immediately transition to Follower.
