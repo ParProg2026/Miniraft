@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -81,6 +82,12 @@ func (nm *NetworkManager) ListenLoop(messageHandler func(net.Addr, miniraft.Mess
 		n, addr, err := nm.Conn.ReadFromUDP(buffer)
 		if err != nil {
 			log.Printf("Error reading from UDP: %v\n", err)
+			continue
+		}
+
+		var cmd ClientCommand
+		if err := json.Unmarshal(buffer[:n], &cmd); err == nil && cmd.Command != "" {
+			// TODO: handleClientCommand
 			continue
 		}
 

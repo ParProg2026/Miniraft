@@ -50,6 +50,11 @@ type RaftServer struct {
 	IsSuspended   bool
 }
 
+// ClientCommand is the struct we use to distinguish commands from regular Raft messages.
+type ClientCommand struct {
+	Command string
+}
+
 // becomeFollower transitions the server to the Follower state and updates the current term.
 // This is triggered when a node discovers a leader or candidate with a higher term.
 func (s *RaftServer) becomeFollower(term int) {
@@ -98,5 +103,7 @@ func (s *RaftServer) HandleIncomingMessage(addr net.Addr, msgType miniraft.Messa
 		s.handleRequestVoteRequest(payload.(*miniraft.RequestVoteRequest))
 	case miniraft.RequestVoteResponseMessage:
 		s.handleRequestVoteResponse(payload.(*miniraft.RequestVoteResponse))
+	default:
+		return
 	}
 }
