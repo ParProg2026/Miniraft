@@ -4,6 +4,7 @@ package main
 import (
 	"log"
 	"math/rand"
+	"net"
 	miniraft "raft/protocol"
 	"time"
 )
@@ -129,8 +130,35 @@ func (s *RaftServer) handleAppendEntriesResponse(response *miniraft.AppendEntrie
 //     and reset the election timer.
 //  5. Otherwise, do not grant the vote (reply false).
 //  6. Send the RequestVoteResponse back to the candidate.
-func (s *RaftServer) handleRequestVoteRequest(request *miniraft.RequestVoteRequest) {
+func (s *RaftServer) handleRequestVoteRequest(from *net.UDPAddr, request *miniraft.RequestVoteRequest) {
 	// TODO: Implement logic to grant or deny vote based on Term and log freshness.
+	resp := &miniraft.RequestVoteResponse{
+		Term:        s.CurrentTerm,
+		VoteGranted: false,
+	}
+
+	if request.Term < s.CurrentTerm {
+		s.sendRaftMessage(from.String(), resp)
+		return
+	}
+
+	if request.Term > s.CurrentTerm {
+		s.becomeFollower(request.Term)
+	}
+
+	if s.VotedFor == "" || s.VotedFor == request.CandidateName {
+		s.VotedFor = request.CandidateName
+		resp := &miniraft.RequestVoteResponse{
+			Term:        s.CurrentTerm,
+			VoteGranted: true,
+		}
+
+		s.sendRaftMessage(from.String(), resp)
+		log.Printf("Voting for %s", request.CandidateName)
+		return
+	}
+
+	s.sendRaftMessage(from.String(), resp)
 }
 
 // handleRequestVoteResponse processes a response to a RequestVote RPC sent by this node (Candidate).
@@ -144,6 +172,22 @@ func (s *RaftServer) handleRequestVoteRequest(request *miniraft.RequestVoteReque
 //     to establish authority and prevent new elections.
 func (s *RaftServer) handleRequestVoteResponse(response *miniraft.RequestVoteResponse) {
 	// TODO: Implement logic to tally votes and transition to Leader if majority reached.
+	if response.Term > s.CurrentTerm {
+		s.becomeFollower(response.Term)
+	}
+
+	if s.State != Candidate {
+		return
+	}
+
+	if response.VoteGranted {
+		s.VotesReceived++
+	}
+
+	if s.VotesReceived > len(s.Peers)/2 {
+		s.becomeLeader()
+		go s.sendHeartbeats()
+	}
 }
 
 // sendAppendEntries builds and dispatches an AppendEntries Request to a specific peer.

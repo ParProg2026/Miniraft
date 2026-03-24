@@ -89,7 +89,7 @@ func (s *RaftServer) becomeLeader() {
 
 // HandleIncomingMessage is the central dispatcher for all network traffic.
 // It routes parsed JSON messages from the network layer to the appropriate RPC handler.
-func (s *RaftServer) HandleIncomingMessage(addr net.Addr, msgType miniraft.MessageType, payload any) {
+func (s *RaftServer) HandleIncomingMessage(addr net.UDPAddr, msgType miniraft.MessageType, payload any) {
 	if s.IsSuspended {
 		return // Silently drop packets if node is simulating a crash
 	}
@@ -100,7 +100,7 @@ func (s *RaftServer) HandleIncomingMessage(addr net.Addr, msgType miniraft.Messa
 	case miniraft.AppendEntriesResponseMessage:
 		s.handleAppendEntriesResponse(payload.(*miniraft.AppendEntriesResponse))
 	case miniraft.RequestVoteRequestMessage:
-		s.handleRequestVoteRequest(payload.(*miniraft.RequestVoteRequest))
+		s.handleRequestVoteRequest(&addr, payload.(*miniraft.RequestVoteRequest))
 	case miniraft.RequestVoteResponseMessage:
 		s.handleRequestVoteResponse(payload.(*miniraft.RequestVoteResponse))
 	default:
