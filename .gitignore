@@ -1,5 +1,8 @@
 *
 !.gitignore
 !src/
+!src/**
+src/**/*.log
+!src/**/*.go
 !data/
 !config/
