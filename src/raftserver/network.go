@@ -75,7 +75,7 @@ func (nm *NetworkManager) BroadcastRaftMessage(payload any) {
 // ListenLoop continuously reads from the UDP connection and dispatches incoming messages.
 // It accepts a callback handler function to process the parsed messages, completely
 // decoupling the networking layer from the consensus state logic.
-func (nm *NetworkManager) ListenLoop(messageHandler func(net.Addr, miniraft.MessageType, any)) {
+func (nm *NetworkManager) ListenLoop(messageHandler func(net.UDPAddr, miniraft.MessageType, any)) {
 	buffer := make([]byte, MaxPacketSize)
 
 	for {
@@ -99,6 +99,6 @@ func (nm *NetworkManager) ListenLoop(messageHandler func(net.Addr, miniraft.Mess
 		}
 
 		// Dispatch the successfully parsed message to the injected handler.
-		messageHandler(addr, msgType, message.Message)
+		messageHandler(*addr, msgType, message.Message)
 	}
 }

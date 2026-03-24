@@ -2,6 +2,7 @@ package main
 
 import (
 	"net"
+	"os"
 	miniraft "raft/protocol"
 	"time"
 )
@@ -48,6 +49,8 @@ type RaftServer struct {
 	NextIndex     []int
 	MatchIndex    []int
 	IsSuspended   bool
+	LeaderId      string
+	logFile       os.File
 }
 
 // ClientCommand is the struct we use to distinguish commands from regular Raft messages.
@@ -98,7 +101,7 @@ func (s *RaftServer) HandleIncomingMessage(addr net.UDPAddr, msgType miniraft.Me
 	case miniraft.AppendEntriesRequestMessage:
 		s.handleAppendEntriesRequest(payload.(*miniraft.AppendEntriesRequest))
 	case miniraft.AppendEntriesResponseMessage:
-		s.handleAppendEntriesResponse(payload.(*miniraft.AppendEntriesResponse))
+		s.handleAppendEntriesResponse(addr, payload.(*miniraft.AppendEntriesResponse))
 	case miniraft.RequestVoteRequestMessage:
 		s.handleRequestVoteRequest(&addr, payload.(*miniraft.RequestVoteRequest))
 	case miniraft.RequestVoteResponseMessage:

@@ -2,10 +2,12 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"math/rand"
 	"net"
 	miniraft "raft/protocol"
+	"sort"
 	"time"
 )
 
@@ -94,28 +96,76 @@ func (s *RaftServer) handleClientCommand(cmd *ClientCommand) {
 			CommandName: cmd.Command,
 		}
 		s.Log = append(s.Log, entry)
+
+		// Append the entry to all peers
+		for i, peer := range s.Peers {
+			s.sendAppendEntries(i, peer)
+		}
 	}
 
 	if s.State == Follower {
-		// Forward command to leader
+		// Forwards the command to the leader
+		s.sendClientCommand(cmd)
 	}
 }
 
 // handleAppendEntriesResponse processes a response to an AppendEntries RPC sent by this node (Leader).
-// As per Raft (Figure 2 in raft.pdf / OngaroPhD.pdf):
-// 1. If response.Term > s.CurrentTerm, update s.CurrentTerm, clear s.VotedFor, and immediately transition to Follower.
-// 2. If we are no longer the Leader, ignore the response.
-// 3. If response.Success is true:
-//   - Update the nextIndex and matchIndex for the follower that sent the response.
-//   - Check if there exists an N > s.CommitIndex such that a majority of matchIndex[i] >= N,
-//     and s.Log[N-1].Term == s.CurrentTerm (assuming 1-based indexing for logs).
-//     If so, set s.CommitIndex = N and apply the newly committed log entries to the state machine.
-//
-// 4. If response.Success is false (due to log inconsistency):
-//   - Decrement nextIndex for that follower.
-//   - Retry the AppendEntries RPC with the new nextIndex and the corresponding entries.
-func (s *RaftServer) handleAppendEntriesResponse(response *miniraft.AppendEntriesResponse) {
-	// TODO: Implement logic to update matchIndex and nextIndex, and advance commitIndex.
+func (s *RaftServer) handleAppendEntriesResponse(from net.UDPAddr, response *miniraft.AppendEntriesResponse) {
+	// As per Raft (Figure 2 in raft.pdf / OngaroPhD.pdf):
+	// 1. If response.Term > s.CurrentTerm, update s.CurrentTerm, clear s.VotedFor, and immediately transition to Follower.
+	if response.Term > s.CurrentTerm {
+		s.becomeFollower(response.Term)
+		return
+	}
+
+	// 2. If we are no longer the Leader, ignore the response.
+	if s.State != Leader {
+		return
+	}
+
+	var fromId = 0
+	for i, peer := range s.Peers {
+		if peer == from.String() {
+			fromId = i
+		}
+	}
+
+	// 3. If response.Success is true:
+	//   - Update the nextIndex and matchIndex for the follower that sent the response.
+	//   - Check if there exists an N > s.CommitIndex such that a majority of matchIndex[i] >= N,
+	//     and s.Log[N-1].Term == s.CurrentTerm (assuming 1-based indexing for logs).
+	//     If so, set s.CommitIndex = N and apply the newly committed log entries to the state machine.
+	// 4. If response.Success is false (due to log inconsistency):
+	//   - Decrement nextIndex for that follower.
+	//   - Retry the AppendEntries RPC with the new nextIndex and the corresponding entries.
+	if response.Success {
+		s.NextIndex[fromId]++
+		s.MatchIndex[fromId]++
+
+		// check if we can commit something
+		indices := make([]int, len(s.MatchIndex))
+		copy(s.MatchIndex, indices)
+		sort.Ints(indices)
+		maxMaj := indices[(len(indices)-1)/2]
+		if maxMaj > s.CommitIndex && s.Log[maxMaj-1].Term == s.CurrentTerm {
+			for i := s.CommitIndex + 1; i <= maxMaj; i++ {
+				// write out to log file: "term,index,command"
+				_, err := s.logFile.WriteString(fmt.Sprintf("%d,%d,%s\n", s.Log[i-1].Term, i, s.Log[i-1].CommandName))
+				if err != nil {
+					log.Fatalf("Failed to write to log file: %v", err)
+				}
+			}
+
+			s.CommitIndex = maxMaj
+		}
+
+		if s.NextIndex[fromId] < len(s.Log) {
+			s.sendAppendEntries(fromId, from.String())
+		}
+	} else {
+		s.NextIndex[fromId]--
+		s.sendAppendEntries(fromId, from.String())
+	}
 }
 
 // handleRequestVoteRequest processes an incoming RequestVote RPC from a Candidate.
@@ -191,8 +241,23 @@ func (s *RaftServer) handleRequestVoteResponse(response *miniraft.RequestVoteRes
 }
 
 // sendAppendEntries builds and dispatches an AppendEntries Request to a specific peer.
-func (s *RaftServer) sendAppendEntries(peer string) {
-	// TODO: Construct miniraft.AppendEntriesRequest based on NextIndex and dispatch via s.sendRaftMessage
+func (s *RaftServer) sendAppendEntries(index int, peer string) {
+	prevLogIndex := s.NextIndex[index]
+
+	s.sendRaftMessage(peer, &miniraft.AppendEntriesRequest{
+		Term:         s.CurrentTerm,
+		LeaderId:     s.Identity,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  s.Log[prevLogIndex].Term,
+		LeaderCommit: s.CommitIndex,
+		LogEntries:   s.Log[prevLogIndex : prevLogIndex+1],
+	})
+}
+
+func (s *RaftServer) sendClientCommand(cmd *ClientCommand) {
+	if s.State == Follower {
+		s.sendRaftMessage(s.LeaderId, cmd)
+	}
 }
 
 // randomElectionTimeout generates a randomized duration between 150ms and 300ms.
