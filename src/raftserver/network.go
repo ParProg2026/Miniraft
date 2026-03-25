@@ -1,3 +1,4 @@
+// Package main provides the networking infrastructure for the Raft consensus algorithm.
 package main
 
 import (
@@ -5,14 +6,13 @@ import (
 	"log"
 	"net"
 	miniraft "raft/protocol"
-	"time"
 )
 
 // MaxPacketSize defines the maximum allowed UDP packet size as per the academic requirements.
 const MaxPacketSize = 1400
 
 // NetworkManager handles all UDP communication for the Raft server.
-// It encapsulates the connection state and peer list to adhere to the Single Responsibility Principle.
+// It encapsulates the connection state and peer list to adhere strictly to the Single Responsibility Principle.
 type NetworkManager struct {
 	Conn  *net.UDPConn
 	Peers []string
@@ -72,68 +72,32 @@ func (nm *NetworkManager) BroadcastRaftMessage(payload any) {
 	}
 }
 
-// ListenLoop continuously reads from the UDP connection and dispatches incoming messages.
-// It accepts a callback handler function to process the parsed messages, completely
-// decoupling the networking layer from the consensus state logic.
-func (nm *NetworkManager) ListenLoop(
-	packetHandler func(*IncomingPacket),
-	s *RaftServer,
-) {
+// ListenLoop continuously reads from the UDP connection, decodes incoming bytes,
+// and dispatches the structured packets via the provided callback.
+// It strictly adheres to the Single Responsibility Principle by offloading all
+// state management and timeouts to the central event loop in main.go.
+func (nm *NetworkManager) ListenLoop(packetHandler func(*IncomingPacket)) {
 	buffer := make([]byte, MaxPacketSize)
 
 	for {
-		now := time.Now()
-		_ = nm.Conn.SetReadDeadline(now.Add(20 * time.Millisecond))
-
+		// Clean blocking read. The network layer no longer polls for election timeouts.
 		n, addr, err := nm.Conn.ReadFromUDP(buffer)
 		if err != nil {
-			if s.ElectionDeadline.Before(time.Now()) && s.State != Leader {
-				s.startElection()
-			}
+			log.Printf("Error reading from UDP socket: %v\n", err)
 			continue
 		}
 
+		// Isolate the packet data to avoid passing the entire reusable buffer
 		packetBytes := append([]byte(nil), buffer[:n]...)
 
+		// Utilize the strict JSON decoder
 		packet, err := decodeIncomingPacket(*addr, packetBytes)
-		if err != nil {
-			log.Printf("Failed to decode packet from %s: %v | raw=%s", addr.String(), err, string(packetBytes))
+		if err != nil || packet == nil {
+			log.Printf("Failed to decode packet from %s: %v | raw=%s\n", addr.String(), err, string(packetBytes))
 			continue
 		}
 
+		// Dispatch the fully parsed packet to the central event loop
 		packetHandler(packet)
 	}
 }
-
-// func (nm *NetworkManager) ListenLoop(messageHandler func(net.UDPAddr, miniraft.MessageType, any), s *RaftServer) {
-// 	buffer := make([]byte, MaxPacketSize)
-//
-// 	for {
-//
-// 		nm.Conn.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
-// 		n, addr, err := nm.Conn.ReadFromUDP(buffer)
-// 		if err != nil {
-// 			// log.Printf("Error reading from UDP: %v\n", err)
-// 			if s.ElectionDeadline.Before(time.Now()) && s.State != Leader {
-// 				s.startElection()
-// 			}
-// 			continue
-// 		}
-//
-// 		// var cmd ClientCommand
-// 		// if err := json.Unmarshal(buffer[:n], &cmd); err == nil && cmd.Command != "" {
-// 		// 	// TODO: handleClientCommand
-// 		// 	continue
-// 		// }
-//
-// 		var message miniraft.RaftMessage
-// 		msgType, err := message.UnmarshalJSON(buffer[:n])
-// 		if err != nil {
-// 			log.Printf("Error unmarshalling incoming message from %s: %v\n", addr.String(), err)
-// 			continue
-// 		}
-//
-// 		// Dispatch the successfully parsed message to the injected handler.
-// 		messageHandler(*addr, msgType, message.Message)
-// 	}
-// }
