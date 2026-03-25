@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -47,6 +48,9 @@ func main() {
 
 	fmt.Println("Client connected. Enter commands (type 'exit' to quit):")
 
+	// Pre-compile regex for input validation (letters and numbers only)
+	validInput := regexp.MustCompile(`^[a-zA-Z0-9]+$`)
+
 	// 4. Initialize the standard input scanner
 	scanner := bufio.NewScanner(os.Stdin)
 
@@ -63,6 +67,12 @@ func main() {
 
 		// Skip empty inputs to avoid sending useless network traffic
 		if trimmedInput == "" {
+			continue
+		}
+
+		// Filter input: only accept letters and numbers
+		if !validInput.MatchString(trimmedInput) {
+			fmt.Println("Only letters and numbers are allowed as input.")
 			continue
 		}
 
