@@ -12,7 +12,6 @@ import (
 )
 
 // sendRaftMessage is a helper function that leverages the injected NetworkManager.
-// Using this prevents the system from opening redundant UDP sockets on every request.
 func (s *RaftServer) sendRaftMessage(peerAddr string, payload any) {
 	err := s.Network.SendRaftMessage(peerAddr, payload)
 	if err != nil {
@@ -27,23 +26,23 @@ func (s *RaftServer) handleAppendEntriesRequest(request *miniraft.AppendEntriesR
 		Success: false,
 	}
 
-	// 1. If request.Term < s.CurrentTerm, reply false immediately (reject stale leader).
+	// 1. If request.Term < s.CurrentTerm, reply false immediately.
 	if request.Term < s.CurrentTerm {
 		s.sendRaftMessage(request.LeaderId, response)
 		return
 	}
 
-	// 2. If the request.Term > s.CurrentTerm, update s.CurrentTerm, clear s.VotedFor, and become a Follower.
+	// 2. If the request.Term > s.CurrentTerm, become a Follower.
 	if request.Term > s.CurrentTerm || s.State != Follower {
 		s.becomeFollower(request.Term)
 		response.Term = s.CurrentTerm
 	}
 
-	// Safely reset the election timer if it exists.
+	// Safely reset the election timer to acknowledge the leader's authority.
 	s.ElectionDeadline = time.Now().Add(randomElectionTimeout())
+	s.LeaderId = request.LeaderId
 
 	// 3. Reply false if the local log doesn't contain an entry at request.PrevLogIndex
-	//    whose term matches request.PrevLogTerm. (Using 1-based log indexing logically)
 	if request.PrevLogIndex > 0 {
 		if request.PrevLogIndex > len(s.Log) {
 			s.sendRaftMessage(request.LeaderId, response)
@@ -55,19 +54,15 @@ func (s *RaftServer) handleAppendEntriesRequest(request *miniraft.AppendEntriesR
 		}
 	}
 
-	// 4. If an existing log entry conflicts with a new one (same index but different terms),
-	//    delete the existing entry and all that follow it.
-	// 5. Append any new entries not already in the log.
+	// 4 & 5. Append any new entries not already in the log.
 	for i, entry := range request.LogEntries {
 		logIdx := request.PrevLogIndex + 1 + i // Logical 1-based index
 		if logIdx <= len(s.Log) {
 			if s.Log[logIdx-1].Term != entry.Term {
-				// Conflict: truncate the log safely
 				s.Log = append([]miniraft.LogEntry(nil), s.Log[:logIdx-1]...)
 				s.Log = append(s.Log, entry)
 			}
 		} else {
-			// Append new entry
 			s.Log = append(s.Log, entry)
 		}
 	}
@@ -95,100 +90,82 @@ func (s *RaftServer) handleClientCommand(cmd *ClientCommand) {
 		}
 		s.Log = append(s.Log, entry)
 
-		// Append the entry to all peers
 		for i, peer := range s.Peers {
 			s.sendAppendEntries(i, peer)
 		}
 	}
 
 	if s.State == Follower {
-		// Forwards the command to the leader
 		s.sendClientCommand(cmd)
 	}
 }
 
 // handleAppendEntriesResponse processes a response to an AppendEntries RPC sent by this node (Leader).
 func (s *RaftServer) handleAppendEntriesResponse(from net.UDPAddr, response *miniraft.AppendEntriesResponse) {
-	// As per Raft (Figure 2 in raft.pdf / OngaroPhD.pdf):
-	// 1. If response.Term > s.CurrentTerm, update s.CurrentTerm, clear s.VotedFor, and immediately transition to Follower.
 	if response.Term > s.CurrentTerm {
 		s.becomeFollower(response.Term)
 		return
 	}
 
-	// 2. If we are no longer the Leader, ignore the response.
 	if s.State != Leader {
 		return
 	}
 
-	var fromId = 0
+	var fromId = -1
 	for i, peer := range s.Peers {
 		if peer == from.String() {
 			fromId = i
 		}
 	}
+	if fromId == -1 {
+		return
+	}
 
-	// 3. If response.Success is true:
-	//   - Update the nextIndex and matchIndex for the follower that sent the response.
-	//   - Check if there exists an N > s.CommitIndex such that a majority of matchIndex[i] >= N,
-	//     and s.Log[N-1].Term == s.CurrentTerm (assuming 1-based indexing for logs).
-	//     If so, set s.CommitIndex = N and apply the newly committed log entries to the state machine.
-	// 4. If response.Success is false (due to log inconsistency):
-	//   - Decrement nextIndex for that follower.
-	//   - Retry the AppendEntries RPC with the new nextIndex and the corresponding entries.
 	if response.Success {
+		// Update follower tracking
 		if s.NextIndex[fromId] <= len(s.Log) {
 			s.MatchIndex[fromId] = s.NextIndex[fromId]
-			s.NextIndex[fromId] = s.MatchIndex[fromId] + 1
+			s.NextIndex[fromId] = s.MatchIndex[fromId] + len(s.Log[s.NextIndex[fromId]-1:])
 		}
 
-		// check if we can commit something
-		indices := make([]int, len(s.MatchIndex))
-		// copy(s.MatchIndex, indices)
+		// Calculate cluster majority. MUST include the Leader's own up-to-date log length.
+		indices := make([]int, len(s.MatchIndex)+1)
 		copy(indices, s.MatchIndex)
+		indices[len(s.MatchIndex)] = len(s.Log) // The leader always has its own entries
 		sort.Ints(indices)
-		maxMaj := indices[(len(indices)-1)/2]
+		
+		// The median of the array representing all nodes determines the globally committed index
+		maxMaj := indices[len(indices)/2]
+		
 		if maxMaj > s.CommitIndex && s.Log[maxMaj-1].Term == s.CurrentTerm {
 			for i := s.CommitIndex + 1; i <= maxMaj; i++ {
-				// write out to log file: "term,index,command"
+				// Safely write to disk
 				_, err := s.logFile.WriteString(fmt.Sprintf("%d,%d,%s\n", s.Log[i-1].Term, i, s.Log[i-1].CommandName))
 				if err != nil {
-					log.Fatalf("Failed to write to log file: %v", err)
+					log.Printf("Failed to write to log file: %v", err)
 				}
+				s.logFile.Sync() // Force flush to disk
 			}
-
 			s.CommitIndex = maxMaj
 		}
 
-		if s.NextIndex[fromId] < len(s.Log) {
+		if s.NextIndex[fromId] <= len(s.Log) {
 			s.sendAppendEntries(fromId, from.String())
 		}
 	} else {
-		s.NextIndex[fromId]--
+		// Follower log is inconsistent, decrement nextIndex and retry
+		if s.NextIndex[fromId] > 1 {
+			s.NextIndex[fromId]--
+		}
 		s.sendAppendEntries(fromId, from.String())
 	}
 }
 
-// handleRequestVoteRequest processes an incoming RequestVote RPC from a Candidate.
-// As per Raft (Figure 2 in raft.pdf / OngaroPhD.pdf):
-//  1. If request.Term < s.CurrentTerm, reply false (reject stale candidate).
-//  2. If request.Term > s.CurrentTerm, update s.CurrentTerm, clear s.VotedFor, and step down to Follower.
-//  3. If s.VotedFor is null (empty) or matches request.CandidateName, check if the candidate's log
-//     is at least as up-to-date as our local log.
-//     - Up-to-date check: If logs have last entries with different terms, the log with the later term is more up-to-date.
-//     - If logs end with the same term, whichever log is longer is more up-to-date.
-//  4. If the candidate's log is up-to-date, grant the vote (set s.VotedFor = request.CandidateName, reply true)
-//     and reset the election timer.
-//  5. Otherwise, do not grant the vote (reply false).
-//  6. Send the RequestVoteResponse back to the candidate.
 func (s *RaftServer) handleRequestVoteRequest(from *net.UDPAddr, request *miniraft.RequestVoteRequest) {
-	// TODO: Implement logic to grant or deny vote based on Term and log freshness.
 	resp := &miniraft.RequestVoteResponse{
 		Term:        s.CurrentTerm,
 		VoteGranted: false,
 	}
-
-	log.Printf("Received Request")
 
 	if request.Term < s.CurrentTerm {
 		s.sendRaftMessage(from.String(), resp)
@@ -222,22 +199,11 @@ func (s *RaftServer) handleRequestVoteRequest(from *net.UDPAddr, request *minira
 	s.sendRaftMessage(from.String(), resp)
 }
 
-// handleRequestVoteResponse processes a response to a RequestVote RPC sent by this node (Candidate).
-// As per Raft (Figure 2 in raft.pdf / OngaroPhD.pdf):
-//  1. If response.Term > s.CurrentTerm, update s.CurrentTerm, clear s.VotedFor, and immediately transition to Follower.
-//  2. If we are no longer a Candidate (e.g., we stepped down or already became Leader), ignore the response.
-//  3. If response.VoteGranted is true, increment s.VotesReceived.
-//  4. If s.VotesReceived reaches a majority of the cluster (i.e. > len(TotalPeers)/2),
-//     transition to Leader utilizing the becomeLeader() function.
-//     - Upon becoming Leader, immediately send empty AppendEntries RPCs (heartbeats) to all peers
-//     to establish authority and prevent new elections.
 func (s *RaftServer) handleRequestVoteResponse(response *miniraft.RequestVoteResponse) {
-	// TODO: Implement logic to tally votes and transition to Leader if majority reached.
 	if response.Term > s.CurrentTerm {
 		s.becomeFollower(response.Term)
+		return
 	}
-
-	log.Printf("Received Response")
 
 	if s.State != Candidate {
 		return
@@ -249,32 +215,50 @@ func (s *RaftServer) handleRequestVoteResponse(response *miniraft.RequestVoteRes
 
 	if s.VotesReceived > len(s.Peers)/2 {
 		s.becomeLeader()
-		go s.sendHeartbeats()
+		// Send initial heartbeat to establish authority instantly.
+		// Note: We call it synchronously; main.go will handle periodic ticks.
+		s.sendHeartbeats()
 	}
 }
 
 // sendAppendEntries builds and dispatches an AppendEntries Request to a specific peer.
 func (s *RaftServer) sendAppendEntries(index int, peer string) {
-	prevLogIndex := s.NextIndex[index]
+	prevLogIndex := s.NextIndex[index] - 1
+	prevTerm := 0
+	if prevLogIndex > 0 && prevLogIndex <= len(s.Log) {
+		prevTerm = s.Log[prevLogIndex-1].Term
+	}
+
+	// Slice from NextIndex to the end of the log to batch replicate entries
+	var entries []miniraft.LogEntry
+	if len(s.Log) >= s.NextIndex[index] {
+		entries = s.Log[s.NextIndex[index]-1:]
+	}
 
 	s.sendRaftMessage(peer, &miniraft.AppendEntriesRequest{
 		Term:         s.CurrentTerm,
 		LeaderId:     s.Identity,
 		PrevLogIndex: prevLogIndex,
-		PrevLogTerm:  s.Log[prevLogIndex].Term,
+		PrevLogTerm:  prevTerm,
 		LeaderCommit: s.CommitIndex,
-		LogEntries:   s.Log[prevLogIndex : prevLogIndex+1],
+		LogEntries:   entries,
 	})
 }
 
 func (s *RaftServer) sendClientCommand(cmd *ClientCommand) {
-	if s.State == Follower {
+	if s.State == Follower && s.LeaderId != "" {
 		s.sendRaftMessage(s.LeaderId, cmd)
 	}
 }
 
-// randomElectionTimeout generates a randomized duration between 150ms and 300ms.
-// The randomness is crucial to prevent split votes during leader elections.
 func randomElectionTimeout() time.Duration {
 	return time.Duration(150+rand.Intn(150)) * time.Millisecond
+}
+
+// min returns the smaller of a or b.
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

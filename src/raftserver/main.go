@@ -15,7 +15,7 @@ import (
 // main is the primary entry point. It orchestrates the setup of the Raft node
 // and initiates the single-threaded event loop to guarantee thread safety.
 func main() {
-	// Parse Command Line Arguments
+	// 1. Parse Command Line Arguments
 	if len(os.Args) != 3 {
 		fmt.Printf("Usage: %s <server-host:server-port> <filename>\n", os.Args[0])
 		os.Exit(1)
@@ -25,11 +25,11 @@ func main() {
 
 	fmt.Printf("Starting Raft server %s using peers config %s...\n", identity, peersFile)
 
-	// Parse Cluster Configuration
+	// 2. Parse Cluster Configuration
 	peers := readPeersConfig(peersFile, identity)
 	fmt.Printf("Discovered peers: %v\n", peers)
 
-	// Initialize Network Infrastructure
+	// 3. Initialize Network Infrastructure
 	network := &NetworkManager{
 		Peers: peers,
 	}
@@ -38,18 +38,18 @@ func main() {
 	}
 	defer network.Conn.Close()
 
-	// Initialize Persistent Storage
+	// 4. Initialize Persistent Storage
 	logFile, err := os.OpenFile(identity+".log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatalf("Failed to open persistent log file: %v", err)
 	}
 	defer logFile.Close()
 
-	// Initialize Core State Machine with Dependency Injection
+	// 5. Initialize Core State Machine with Dependency Injection
 	state := RaftServer{
 		Identity:         identity,
 		Peers:            peers,
-		Network:          network, // Injecting the network manager
+		Network:          network,
 		State:            Follower,
 		CurrentTerm:      0,
 		VotedFor:         "",
@@ -64,18 +64,24 @@ func main() {
 		logFile:          *logFile,
 	}
 
-	// Setup Concurrency Channels for the Event Loop
+	// 6. Setup Concurrency Channels for the Event Loop
 	packetCh := make(chan *IncomingPacket, 100)
 	cliCh := make(chan string, 10)
-	ticker := time.NewTicker(10 * time.Millisecond) // High-resolution clock tick
+	
+	// High-resolution clock tick for evaluating timeouts
+	ticker := time.NewTicker(10 * time.Millisecond) 
 	defer ticker.Stop()
 
-	// Start Background Producers
+	// Standard Raft heartbeat interval
+	heartbeatTicker := time.NewTicker(100 * time.Millisecond)
+	defer heartbeatTicker.Stop()
+
+	// 7. Start Background Producers
+	
 	// Network Producer
 	packetHandler := func(packet *IncomingPacket) {
 		packetCh <- packet
 	}
-
 	go network.ListenLoop(packetHandler)
 
 	// CLI Producer
@@ -86,7 +92,7 @@ func main() {
 		}
 	}()
 
-	// The Central Event Loop (Actor Model)
+	// 8. The Central Event Loop (Actor Model)
 	// This select block guarantees that the RaftServer state is only ever mutated
 	// by one event at a time, completely eliminating memory race conditions.
 	log.Println("Node is online and entering event loop.")
@@ -100,12 +106,19 @@ func main() {
 			// Process local developer CLI commands
 			processDebugCommand(&state, cmd)
 
+		case <-heartbeatTicker.C:
+			// Periodically broadcast heartbeats to maintain leadership authority
+			// and replicate logs to followers.
+			if state.State == Leader && !state.IsSuspended {
+				state.sendHeartbeats()
+			}
+
 		case <-ticker.C:
 			// Centralized Time Management
 			if state.IsSuspended {
 				continue
 			}
-
+			
 			// Trigger elections if a Follower or Candidate times out
 			if state.State != Leader && time.Now().After(state.ElectionDeadline) {
 				state.startElection()

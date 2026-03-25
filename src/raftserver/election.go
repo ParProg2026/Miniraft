@@ -27,31 +27,15 @@ func (s *RaftServer) startElection() {
 	s.ElectionDeadline = time.Now().Add(randomElectionTimeout())
 }
 
-// Requires election before testing
+// sendHeartbeats builds and dispatches AppendEntries RPCs to all peers.
+// It serves as both a keep-alive and the primary log replication mechanism.
+// This function performs a single broadcast pass and yields control back to the event loop.
 func (s *RaftServer) sendHeartbeats() {
-	ticker := time.NewTicker(120 * time.Millisecond)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		if s.State != Leader {
-			return
-		}
-		for i, peer := range s.Peers {
-			prevIndex := s.NextIndex[i] - 1
-			prevTerm := 0
-			if prevIndex > 0 {
-				prevTerm = s.Log[prevIndex-1].Term
-			}
-
-			req := &miniraft.AppendEntriesRequest{
-				Term:         s.CurrentTerm,
-				PrevLogIndex: prevIndex,
-				PrevLogTerm:  prevTerm,
-				LeaderCommit: s.CommitIndex,
-				LeaderId:     s.Identity,
-				LogEntries:   nil,
-			}
-			s.Network.SendRaftMessage(peer, req)
-		}
+	if s.State != Leader {
+		return
+	}
+	
+	for i, peer := range s.Peers {
+		s.sendAppendEntries(i, peer)
 	}
 }
