@@ -1,21 +1,16 @@
-// Package main is the entry point for the Raft server implementation.
-// It initializes the networking, the state machine, and runs the central event loop.
-// Usage: go run . <server-host:server-port> <filename>
 package main
 
 import (
 	"bufio"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	miniraft "raft/protocol"
 	"time"
 )
 
-// main is the primary entry point. It orchestrates the setup of the Raft node
-// and initiates the single-threaded event loop to guarantee thread safety.
 func main() {
-	// 1. Parse Command Line Arguments
 	if len(os.Args) != 3 {
 		fmt.Printf("Usage: %s <server-host:server-port> <filename>\n", os.Args[0])
 		os.Exit(1)
@@ -23,13 +18,19 @@ func main() {
 	identity := os.Args[1]
 	peersFile := os.Args[2]
 
+	// CRITICAL FIX: Seed the random number generator uniquely per node
+	// Prevents nodes from generating the exact same timeouts and creating split-vote deadlocks
+	var hash int64
+	for _, c := range identity {
+		hash += int64(c)
+	}
+	rand.Seed(time.Now().UnixNano() + hash)
+
 	fmt.Printf("Starting Raft server %s using peers config %s...\n", identity, peersFile)
 
-	// 2. Parse Cluster Configuration
 	peers := readPeersConfig(peersFile, identity)
 	fmt.Printf("Discovered peers: %v\n", peers)
 
-	// 3. Initialize Network Infrastructure
 	network := &NetworkManager{
 		Peers: peers,
 	}
@@ -38,14 +39,12 @@ func main() {
 	}
 	defer network.Conn.Close()
 
-	// 4. Initialize Persistent Storage
 	logFile, err := os.OpenFile(identity+".log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatalf("Failed to open persistent log file: %v", err)
 	}
 	defer logFile.Close()
 
-	// 5. Initialize Core State Machine with Dependency Injection
 	state := RaftServer{
 		Identity:         identity,
 		Peers:            peers,
@@ -61,30 +60,23 @@ func main() {
 		NextIndex:        []int{},
 		MatchIndex:       []int{},
 		IsSuspended:      false,
-		logFile:          *logFile,
+		logFile:          logFile, // CRITICAL FIX: Pass the pointer directly
 	}
 
-	// 6. Setup Concurrency Channels for the Event Loop
 	packetCh := make(chan *IncomingPacket, 100)
 	cliCh := make(chan string, 10)
 	
-	// High-resolution clock tick for evaluating timeouts
 	ticker := time.NewTicker(10 * time.Millisecond) 
 	defer ticker.Stop()
 
-	// Standard Raft heartbeat interval
 	heartbeatTicker := time.NewTicker(100 * time.Millisecond)
 	defer heartbeatTicker.Stop()
 
-	// 7. Start Background Producers
-	
-	// Network Producer
 	packetHandler := func(packet *IncomingPacket) {
 		packetCh <- packet
 	}
 	go network.ListenLoop(packetHandler)
 
-	// CLI Producer
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)
 		for scanner.Scan() {
@@ -92,34 +84,25 @@ func main() {
 		}
 	}()
 
-	// 8. The Central Event Loop (Actor Model)
-	// This select block guarantees that the RaftServer state is only ever mutated
-	// by one event at a time, completely eliminating memory race conditions.
 	log.Println("Node is online and entering event loop.")
 	for {
 		select {
 		case packet := <-packetCh:
-			// Process incoming UDP network packets
 			state.HandleIncomingMessage(packet)
 
 		case cmd := <-cliCh:
-			// Process local developer CLI commands
 			processDebugCommand(&state, cmd)
 
 		case <-heartbeatTicker.C:
-			// Periodically broadcast heartbeats to maintain leadership authority
-			// and replicate logs to followers.
 			if state.State == Leader && !state.IsSuspended {
 				state.sendHeartbeats()
 			}
 
 		case <-ticker.C:
-			// Centralized Time Management
 			if state.IsSuspended {
 				continue
 			}
 			
-			// Trigger elections if a Follower or Candidate times out
 			if state.State != Leader && time.Now().After(state.ElectionDeadline) {
 				state.startElection()
 			}
@@ -127,8 +110,6 @@ func main() {
 	}
 }
 
-// readPeersConfig reads the cluster configuration file and returns a list of peer addresses.
-// It filters out the node's own identity to prevent the server from sending messages to itself.
 func readPeersConfig(filename string, selfIdentity string) []string {
 	var peers []string
 	file, err := os.Open(filename)
@@ -144,17 +125,9 @@ func readPeersConfig(filename string, selfIdentity string) []string {
 			peers = append(peers, peer)
 		}
 	}
-
-	if err := scanner.Err(); err != nil {
-		log.Fatalf("Error reading peers file: %v", err)
-	}
-
 	return peers
 }
 
-// processDebugCommand handles introspection and state control commands from standard input.
-// It acts directly on the RaftServer memory space, which is safe because it is called
-// synchronously from the central event loop.
 func processDebugCommand(state *RaftServer, cmd string) {
 	switch cmd {
 	case "log":
@@ -184,8 +157,7 @@ func processDebugCommand(state *RaftServer, cmd string) {
 	case "resume":
 		if state.IsSuspended {
 			state.IsSuspended = false
-			// Reset the election deadline so it doesn't instantly panic/elect upon waking up
-			state.ElectionDeadline = time.Now().Add(time.Duration(150) * time.Millisecond)
+			state.ElectionDeadline = time.Now().Add(randomElectionTimeout())
 			fmt.Println("Server resumed")
 		} else {
 			fmt.Println("Server is already running")
