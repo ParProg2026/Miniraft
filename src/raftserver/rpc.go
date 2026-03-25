@@ -79,7 +79,7 @@ func (s *RaftServer) handleAppendEntriesRequest(request *miniraft.AppendEntriesR
 		// Persist the missing follower entries to the physical log file
 		if newCommitIndex > s.CommitIndex {
 			for i := s.CommitIndex + 1; i <= newCommitIndex; i++ {
-				_, err := fmt.Fprintf(&s.logFile, "%d,%d,%s\n", s.Log[i-1].Term, i, s.Log[i-1].CommandName)
+				_, err := fmt.Fprintf(s.logFile, "%d,%d,%s\n", s.Log[i-1].Term, i, s.Log[i-1].CommandName)
 				if err != nil {
 					log.Printf("Follower failed to write to log file: %v", err)
 				}
@@ -115,7 +115,7 @@ func (s *RaftServer) handleClientCommand(cmd *ClientCommand) {
 	}
 
 	if s.State == Follower {
-		s.sendClientCommand(cmd)
+		s.sendClientCommand(s.LeaderId, cmd)
 	}
 }
 
@@ -154,10 +154,10 @@ func (s *RaftServer) handleAppendEntriesResponse(from net.UDPAddr, response *min
 		copy(indices, s.MatchIndex)
 		indices[len(s.MatchIndex)] = len(s.Log) // The leader always has its own entries
 		sort.Ints(indices)
-		
+
 		// The median of the array representing all nodes determines the globally committed index
 		maxMaj := indices[len(indices)/2]
-		
+
 		if maxMaj > s.CommitIndex && s.Log[maxMaj-1].Term == s.CurrentTerm {
 			for i := s.CommitIndex + 1; i <= maxMaj; i++ {
 				// Safely write to disk
@@ -249,6 +249,7 @@ func (s *RaftServer) handleRequestVoteResponse(response *miniraft.RequestVoteRes
 
 // sendAppendEntries builds and dispatches an AppendEntries Request to a specific peer.
 // It acts as the core mechanism for batch log replication.
+// sendAppendEntries builds and dispatches an AppendEntries Request to a specific peer.
 func (s *RaftServer) sendAppendEntries(index int, peer string) {
 	prevLogIndex := s.NextIndex[index] - 1
 	prevTerm := 0
@@ -256,8 +257,9 @@ func (s *RaftServer) sendAppendEntries(index int, peer string) {
 		prevTerm = s.Log[prevLogIndex-1].Term
 	}
 
-	// Slice from NextIndex to the end of the log to batch replicate missing entries efficiently
-	var entries []miniraft.LogEntry
+	// CRITICAL FIX: Explicitly initialize an empty slice instead of a nil slice.
+	// This guarantees it serializes cleanly across the network if the log is empty.
+	entries := make([]miniraft.LogEntry, 0)
 	if len(s.Log) >= s.NextIndex[index] {
 		entries = s.Log[s.NextIndex[index]-1:]
 	}
@@ -272,16 +274,15 @@ func (s *RaftServer) sendAppendEntries(index int, peer string) {
 	})
 }
 
-// sendClientCommand proxies unhandled client requests from a Follower to the active Leader.
-func (s *RaftServer) sendClientCommand(cmd *ClientCommand) {
-	if s.State == Follower && s.LeaderId != "" {
-		s.sendRaftMessage(s.LeaderId, cmd)
-	}
+// randomElectionTimeout generates a non-deterministic duration.
+func randomElectionTimeout() time.Duration {
+	// CRITICAL FIX: Increased bounds to 300-600ms.
+	// This ensures network jitter doesn't cause a follower to time out between 100ms heartbeats.
+	return time.Duration(150+rand.Intn(150)) * time.Millisecond
 }
 
-// randomElectionTimeout generates a non-deterministic duration between 150ms and 300ms.
-func randomElectionTimeout() time.Duration {
-	return time.Duration(150+rand.Intn(150)) * time.Millisecond
+func (s *RaftServer) sendClientCommand(peer string, cmd *ClientCommand) {
+	s.sendRaftMessage(peer, cmd)
 }
 
 // min returns the smaller of a or b integers.
