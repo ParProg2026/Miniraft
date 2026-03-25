@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	miniraft "raft/protocol"
+	"time"
 )
 
 func main() {
@@ -55,19 +56,20 @@ func main() {
 
 	// 4. Initialize Core State Machine with Dependency Injection
 	state := RaftServer{
-		Identity:      identity,
-		Peers:         peers,
-		Network:       network, // Injecting the network manager
-		State:         Follower,
-		CurrentTerm:   0,
-		VotedFor:      "",
-		VotesReceived: 0,
-		Log:           []miniraft.LogEntry{},
-		CommitIndex:   0,
-		LastApplied:   0,
-		NextIndex:     []int{},
-		MatchIndex:    []int{},
-		IsSuspended:   false,
+		Identity:         identity,
+		Peers:            peers,
+		Network:          network, // Injecting the network manager
+		State:            Follower,
+		CurrentTerm:      0,
+		VotedFor:         "",
+		VotesReceived:    0,
+		ElectionDeadline: time.Now().Add(randomElectionTimeout()),
+		Log:              []miniraft.LogEntry{},
+		CommitIndex:      0,
+		LastApplied:      0,
+		NextIndex:        []int{},
+		MatchIndex:       []int{},
+		IsSuspended:      false,
 	}
 
 	logFile, err := os.OpenFile(identity+".log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -78,7 +80,7 @@ func main() {
 
 	// 6. Start the UDP Listener loop in the background.
 	// We pass the HandleIncomingMessage method as a callback to route payloads to the state machine.
-	go network.ListenLoop(state.HandleIncomingMessage)
+	go network.ListenLoop(state.HandleIncomingMessage, &state)
 
 	// 7. Start the Debug Command Loop (Main Thread)
 	startDebugCLI(&state)

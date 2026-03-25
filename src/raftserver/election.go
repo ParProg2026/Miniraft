@@ -9,23 +9,22 @@ import (
 func (s *RaftServer) startElection() {
 	s.becomeCandidate()
 
-	for i, peer := range s.Peers {
-		prevIndex := s.NextIndex[i] - 1
-		prevTerm := 0
-		if prevIndex > 0 {
-			prevTerm = s.Log[prevIndex-1].Term
-		}
-
-		req := &miniraft.RequestVoteRequest{
-			Term:          s.CurrentTerm,
-			CandidateName: s.Identity,
-			LastLogIndex:  prevIndex,
-			LastLogTerm:   prevTerm,
-		}
-		log.Printf("Starting election term: %d", s.CurrentTerm)
-
-		s.sendRaftMessage(peer, req)
+	log.Printf("Starting election term: %d", s.CurrentTerm)
+	prevIndex := len(s.Log)
+	prevTerm := 0
+	if prevIndex > 0 {
+		prevTerm = s.Log[prevIndex-1].Term
 	}
+
+	req := &miniraft.RequestVoteRequest{
+		Term:          s.CurrentTerm,
+		CandidateName: s.Identity,
+		LastLogIndex:  prevIndex,
+		LastLogTerm:   prevTerm,
+	}
+
+	s.Network.BroadcastRaftMessage(req)
+	s.ElectionDeadline = time.Now().Add(randomElectionTimeout())
 }
 
 // Requires election before testing
