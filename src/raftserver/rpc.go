@@ -40,9 +40,7 @@ func (s *RaftServer) handleAppendEntriesRequest(request *miniraft.AppendEntriesR
 	}
 
 	// Safely reset the election timer if it exists.
-	if s.ElectionTimer != nil {
-		s.ElectionTimer.Reset(randomElectionTimeout())
-	}
+	s.ElectionDeadline = time.Now().Add(randomElectionTimeout())
 
 	// 3. Reply false if the local log doesn't contain an entry at request.PrevLogIndex
 	//    whose term matches request.PrevLogTerm. (Using 1-based log indexing logically)
@@ -139,12 +137,15 @@ func (s *RaftServer) handleAppendEntriesResponse(from net.UDPAddr, response *min
 	//   - Decrement nextIndex for that follower.
 	//   - Retry the AppendEntries RPC with the new nextIndex and the corresponding entries.
 	if response.Success {
-		s.NextIndex[fromId]++
-		s.MatchIndex[fromId]++
+		if s.NextIndex[fromId] <= len(s.Log) {
+			s.MatchIndex[fromId] = s.NextIndex[fromId]
+			s.NextIndex[fromId] = s.MatchIndex[fromId] + 1
+		}
 
 		// check if we can commit something
 		indices := make([]int, len(s.MatchIndex))
-		copy(s.MatchIndex, indices)
+		// copy(s.MatchIndex, indices)
+		copy(indices, s.MatchIndex)
 		sort.Ints(indices)
 		maxMaj := indices[(len(indices)-1)/2]
 		if maxMaj > s.CommitIndex && s.Log[maxMaj-1].Term == s.CurrentTerm {
@@ -187,6 +188,8 @@ func (s *RaftServer) handleRequestVoteRequest(from *net.UDPAddr, request *minira
 		VoteGranted: false,
 	}
 
+	log.Printf("Received Request")
+
 	if request.Term < s.CurrentTerm {
 		s.sendRaftMessage(from.String(), resp)
 		return
@@ -196,18 +199,26 @@ func (s *RaftServer) handleRequestVoteRequest(from *net.UDPAddr, request *minira
 		s.becomeFollower(request.Term)
 	}
 
-	if s.VotedFor == "" || s.VotedFor == request.CandidateName {
-		s.VotedFor = request.CandidateName
-		resp := &miniraft.RequestVoteResponse{
-			Term:        s.CurrentTerm,
-			VoteGranted: true,
-		}
-
-		s.sendRaftMessage(from.String(), resp)
-		log.Printf("Voting for %s", request.CandidateName)
-		return
+	prevIndex := len(s.Log)
+	prevTerm := 0
+	if prevIndex > 0 {
+		prevTerm = s.Log[prevIndex-1].Term
 	}
 
+	if s.VotedFor == "" || s.VotedFor == request.CandidateName {
+		if request.LastLogTerm > prevTerm || (request.LastLogTerm == prevTerm && request.LastLogIndex >= prevIndex) {
+			s.VotedFor = request.CandidateName
+			resp := &miniraft.RequestVoteResponse{
+				Term:        s.CurrentTerm,
+				VoteGranted: true,
+			}
+
+			s.sendRaftMessage(from.String(), resp)
+			s.ElectionDeadline = time.Now().Add(randomElectionTimeout())
+			log.Printf("Voting for %s", request.CandidateName)
+			return
+		}
+	}
 	s.sendRaftMessage(from.String(), resp)
 }
 
@@ -225,6 +236,8 @@ func (s *RaftServer) handleRequestVoteResponse(response *miniraft.RequestVoteRes
 	if response.Term > s.CurrentTerm {
 		s.becomeFollower(response.Term)
 	}
+
+	log.Printf("Received Response")
 
 	if s.State != Candidate {
 		return

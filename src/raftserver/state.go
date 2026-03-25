@@ -1,7 +1,7 @@
 package main
 
 import (
-	"net"
+	"log"
 	"os"
 	miniraft "raft/protocol"
 	"time"
@@ -42,15 +42,16 @@ type RaftServer struct {
 	CurrentTerm   int
 	VotedFor      string
 	VotesReceived int
-	ElectionTimer *time.Timer
-	Log           []miniraft.LogEntry
-	CommitIndex   int
-	LastApplied   int
-	NextIndex     []int
-	MatchIndex    []int
-	IsSuspended   bool
-	LeaderId      string
-	logFile       os.File
+	// ElectionTimer *time.Timer
+	ElectionDeadline time.Time
+	Log              []miniraft.LogEntry
+	CommitIndex      int
+	LastApplied      int
+	NextIndex        []int
+	MatchIndex       []int
+	IsSuspended      bool
+	LeaderId         string
+	logFile          os.File
 }
 
 // ClientCommand is the struct we use to distinguish commands from regular Raft messages.
@@ -65,6 +66,7 @@ func (s *RaftServer) becomeFollower(term int) {
 	s.CurrentTerm = term // Update term to the one of the leader
 	s.VotedFor = ""      // Reset vote
 	s.VotesReceived = 0  // Reset vote counter
+	s.ElectionDeadline = time.Now().Add(randomElectionTimeout())
 }
 
 // becomeCandidate transitions the server to the Candidate state to initiate an election.
@@ -88,25 +90,77 @@ func (s *RaftServer) becomeLeader() {
 		s.NextIndex[i] = len(s.Log) + 1
 		s.MatchIndex[i] = 0
 	}
+	log.Printf("Yipee")
 }
 
 // HandleIncomingMessage is the central dispatcher for all network traffic.
 // It routes parsed JSON messages from the network layer to the appropriate RPC handler.
-func (s *RaftServer) HandleIncomingMessage(addr net.UDPAddr, msgType miniraft.MessageType, payload any) {
+func (s *RaftServer) HandleIncomingMessage(packet *IncomingPacket) {
 	if s.IsSuspended {
-		return // Silently drop packets if node is simulating a crash
-	}
-
-	switch msgType {
-	case miniraft.AppendEntriesRequestMessage:
-		s.handleAppendEntriesRequest(payload.(*miniraft.AppendEntriesRequest))
-	case miniraft.AppendEntriesResponseMessage:
-		s.handleAppendEntriesResponse(addr, payload.(*miniraft.AppendEntriesResponse))
-	case miniraft.RequestVoteRequestMessage:
-		s.handleRequestVoteRequest(&addr, payload.(*miniraft.RequestVoteRequest))
-	case miniraft.RequestVoteResponseMessage:
-		s.handleRequestVoteResponse(payload.(*miniraft.RequestVoteResponse))
-	default:
 		return
 	}
+
+	switch packet.Type {
+	case IncomingClientCommand:
+		cmd, ok := packet.Payload.(*ClientCommand)
+		if !ok {
+			log.Printf("bad payload type for client command from %s: %T", packet.From.String(), packet.Payload)
+			return
+		}
+		s.handleClientCommand(cmd)
+
+	case IncomingAppendEntriesRequest:
+		req, ok := packet.Payload.(*miniraft.AppendEntriesRequest)
+		if !ok {
+			log.Printf("bad payload type for AppendEntriesRequest from %s: %T", packet.From.String(), packet.Payload)
+			return
+		}
+		s.handleAppendEntriesRequest(req)
+
+	case IncomingAppendEntriesResponse:
+		resp, ok := packet.Payload.(*miniraft.AppendEntriesResponse)
+		if !ok {
+			log.Printf("bad payload type for AppendEntriesResponse from %s: %T", packet.From.String(), packet.Payload)
+			return
+		}
+		s.handleAppendEntriesResponse(packet.From, resp)
+
+	case IncomingRequestVoteRequest:
+		req, ok := packet.Payload.(*miniraft.RequestVoteRequest)
+		if !ok {
+			log.Printf("bad payload type for RequestVoteRequest from %s: %T", packet.From.String(), packet.Payload)
+			return
+		}
+		s.handleRequestVoteRequest(&packet.From, req)
+
+	case IncomingRequestVoteResponse:
+		resp, ok := packet.Payload.(*miniraft.RequestVoteResponse)
+		if !ok {
+			log.Printf("bad payload type for RequestVoteResponse from %s: %T", packet.From.String(), packet.Payload)
+			return
+		}
+		s.handleRequestVoteResponse(resp)
+
+	default:
+		log.Printf("unknown packet kind from %s", packet.From.String())
+	}
 }
+
+// func (s *RaftServer) HandleIncomingMessage(addr net.UDPAddr, msgType miniraft.MessageType, payload any) {
+// 	if s.IsSuspended {
+// 		return // Silently drop packets if node is simulating a crash
+// 	}
+//
+// 	switch msgType {
+// 	case miniraft.AppendEntriesRequestMessage:
+// 		s.handleAppendEntriesRequest(payload.(*miniraft.AppendEntriesRequest))
+// 	case miniraft.AppendEntriesResponseMessage:
+// 		s.handleAppendEntriesResponse(addr, payload.(*miniraft.AppendEntriesResponse))
+// 	case miniraft.RequestVoteRequestMessage:
+// 		s.handleRequestVoteRequest(&addr, payload.(*miniraft.RequestVoteRequest))
+// 	case miniraft.RequestVoteResponseMessage:
+// 		s.handleRequestVoteResponse(payload.(*miniraft.RequestVoteResponse))
+// 	default:
+// 		return
+// 	}
+// }
