@@ -21,6 +21,21 @@ func (s *RaftServer) sendRaftMessage(peerAddr string, payload any) {
 	}
 }
 
+func (s *RaftServer) writeOutCommits(newCommitIndex int) {
+	for i := s.CommitIndex + 1; i <= newCommitIndex; i++ {
+		_, err := fmt.Fprintf(s.logFile, "%d,%d,%s\n", s.Log[i-1].Term, i, s.Log[i-1].CommandName)
+		if err != nil {
+			log.Printf("Failed to write to log file: %v", err)
+		}
+	}
+	err := s.logFile.Sync() // Force an OS-level flush to disk
+	if err != nil {
+		log.Printf("Failed to sync log file: %v", err)
+		return
+	}
+	s.CommitIndex = newCommitIndex
+}
+
 // handleAppendEntriesRequest processes an incoming AppendEntries RPC from an active leader.
 // It handles term synchronization, log truncation for conflicts, and persistent disk flushing.
 func (s *RaftServer) handleAppendEntriesRequest(request *miniraft.AppendEntriesRequest) {
@@ -78,14 +93,7 @@ func (s *RaftServer) handleAppendEntriesRequest(request *miniraft.AppendEntriesR
 
 		// Persist the missing follower entries to the physical log file
 		if newCommitIndex > s.CommitIndex {
-			for i := s.CommitIndex + 1; i <= newCommitIndex; i++ {
-				_, err := fmt.Fprintf(s.logFile, "%d,%d,%s\n", s.Log[i-1].Term, i, s.Log[i-1].CommandName)
-				if err != nil {
-					log.Printf("Follower failed to write to log file: %v", err)
-				}
-			}
-			s.logFile.Sync() // Force an OS-level flush to disk
-			s.CommitIndex = newCommitIndex
+			s.writeOutCommits(newCommitIndex)
 		}
 	}
 
@@ -149,25 +157,17 @@ func (s *RaftServer) handleAppendEntriesResponse(from net.UDPAddr, response *min
 			s.NextIndex[fromId] = s.MatchIndex[fromId] + len(s.Log[s.NextIndex[fromId]-1:])
 		}
 
-		// Calculate cluster majority. MUST include the Leader's own up-to-date log length.
+		// Calculate cluster majority
 		indices := make([]int, len(s.MatchIndex)+1)
 		copy(indices, s.MatchIndex)
-		indices[len(s.MatchIndex)] = len(s.Log) // The leader always has its own entries
+		indices[len(s.MatchIndex)] = len(s.Log) // Log of the leader
 		sort.Ints(indices)
 
 		// The median of the array representing all nodes determines the globally committed index
 		maxMaj := indices[len(indices)/2]
 
 		if maxMaj > s.CommitIndex && s.Log[maxMaj-1].Term == s.CurrentTerm {
-			for i := s.CommitIndex + 1; i <= maxMaj; i++ {
-				// Safely write to disk
-				_, err := s.logFile.WriteString(fmt.Sprintf("%d,%d,%s\n", s.Log[i-1].Term, i, s.Log[i-1].CommandName))
-				if err != nil {
-					log.Printf("Failed to write to log file: %v", err)
-				}
-				s.logFile.Sync() // Force flush to disk
-			}
-			s.CommitIndex = maxMaj
+			s.writeOutCommits(maxMaj)
 		}
 
 		// If the follower is still lagging after a successful append, send the next batch
@@ -257,8 +257,6 @@ func (s *RaftServer) sendAppendEntries(index int, peer string) {
 		prevTerm = s.Log[prevLogIndex-1].Term
 	}
 
-	// CRITICAL FIX: Explicitly initialize an empty slice instead of a nil slice.
-	// This guarantees it serializes cleanly across the network if the log is empty.
 	entries := make([]miniraft.LogEntry, 0)
 	if len(s.Log) >= s.NextIndex[index] {
 		entries = s.Log[s.NextIndex[index]-1:]
@@ -276,19 +274,9 @@ func (s *RaftServer) sendAppendEntries(index int, peer string) {
 
 // randomElectionTimeout generates a non-deterministic duration.
 func randomElectionTimeout() time.Duration {
-	// CRITICAL FIX: Increased bounds to 300-600ms.
-	// This ensures network jitter doesn't cause a follower to time out between 100ms heartbeats.
 	return time.Duration(150+rand.Intn(150)) * time.Millisecond
 }
 
 func (s *RaftServer) sendClientCommand(peer string, cmd *ClientCommand) {
 	s.sendRaftMessage(peer, cmd)
-}
-
-// min returns the smaller of a or b integers.
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

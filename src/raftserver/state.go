@@ -36,7 +36,7 @@ func (s ServerState) String() string {
 type RaftServer struct {
 	Identity         string
 	Peers            []string
-	Network          *NetworkManager 
+	Network          *NetworkManager
 	State            ServerState
 	CurrentTerm      int
 	VotedFor         string
@@ -49,7 +49,7 @@ type RaftServer struct {
 	MatchIndex       []int
 	IsSuspended      bool
 	LeaderId         string
-	logFile          *os.File // CRITICAL FIX: Must be a pointer for OS-level file writing
+	logFile          *os.File
 }
 
 type ClientCommand struct {
@@ -58,23 +58,23 @@ type ClientCommand struct {
 
 func (s *RaftServer) becomeFollower(term int) {
 	s.State = Follower
-	s.CurrentTerm = term 
-	s.VotedFor = ""      
-	s.VotesReceived = 0  
+	s.CurrentTerm = term
+	s.VotedFor = ""
+	s.VotesReceived = 0
 	s.ElectionDeadline = time.Now().Add(randomElectionTimeout())
 }
 
 func (s *RaftServer) becomeCandidate() {
 	s.State = Candidate
-	s.CurrentTerm++         
-	s.VotedFor = s.Identity 
+	s.CurrentTerm++
+	s.VotedFor = s.Identity
 	s.VotesReceived = 1
 }
 
 func (s *RaftServer) becomeLeader() {
 	s.State = Leader
-	s.NextIndex = make([]int, len(s.Peers))  
-	s.MatchIndex = make([]int, len(s.Peers)) 
+	s.NextIndex = make([]int, len(s.Peers))
+	s.MatchIndex = make([]int, len(s.Peers))
 
 	for i := range s.Peers {
 		s.NextIndex[i] = len(s.Log) + 1

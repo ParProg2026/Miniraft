@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"log"
-	"math/rand"
 	"os"
 	miniraft "raft/protocol"
 	"time"
@@ -18,13 +17,11 @@ func main() {
 	identity := os.Args[1]
 	peersFile := os.Args[2]
 
-	// CRITICAL FIX: Seed the random number generator uniquely per node
-	// Prevents nodes from generating the exact same timeouts and creating split-vote deadlocks
-	var hash int64
-	for _, c := range identity {
-		hash += int64(c)
-	}
-	rand.Seed(time.Now().UnixNano() + hash)
+	//var hash int64
+	//for _, c := range identity {
+	//	hash += int64(c)
+	//}
+	//rand.Seed(time.Now().UnixNano() + hash)
 
 	fmt.Printf("Starting Raft server %s using peers config %s...\n", identity, peersFile)
 
@@ -60,13 +57,13 @@ func main() {
 		NextIndex:        []int{},
 		MatchIndex:       []int{},
 		IsSuspended:      false,
-		logFile:          logFile, // CRITICAL FIX: Pass the pointer directly
+		logFile:          logFile,
 	}
 
 	packetCh := make(chan *IncomingPacket, 100)
 	cliCh := make(chan string, 10)
-	
-	ticker := time.NewTicker(10 * time.Millisecond) 
+
+	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
 	heartbeatTicker := time.NewTicker(100 * time.Millisecond)
@@ -102,7 +99,7 @@ func main() {
 			if state.IsSuspended {
 				continue
 			}
-			
+
 			if state.State != Leader && time.Now().After(state.ElectionDeadline) {
 				state.startElection()
 			}
