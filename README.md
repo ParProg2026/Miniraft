@@ -1,6 +1,7 @@
 ### Raft Implementation in Go
 
-This repository contains a lightweight implementation of the Raft consensus algorithm in Go, using UDP for communication.
+You can find the overall project structure in the next section.
+The documentation is part of the comments inside the code itself.
 
 #### Project Structure
 
