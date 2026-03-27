@@ -1,8 +1,9 @@
 *
 !.gitignore
-!src/
-!src/**
-src/**/*.log
-!src/**/*.go
+!agentlogs/
+!protocol/*.go
+!raftclient/*.go
+!raftserver/*.go
 !data/
 !config/
+!src/**/*.go
