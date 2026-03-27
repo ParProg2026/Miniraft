@@ -9,7 +9,9 @@ import (
 func (s *RaftServer) startElection() {
 	s.becomeCandidate()
 
-	log.Printf("Starting election term: %d", s.CurrentTerm)
+	if DEBUG {
+		log.Printf("Starting election term: %d", s.CurrentTerm)
+	}
 	prevIndex := len(s.Log)
 	prevTerm := 0
 	if prevIndex > 0 {

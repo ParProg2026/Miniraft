@@ -217,7 +217,9 @@ func (s *RaftServer) handleRequestVoteRequest(from *net.UDPAddr, request *minira
 
 			s.sendRaftMessage(from.String(), resp)
 			s.ElectionDeadline = time.Now().Add(randomElectionTimeout())
-			log.Printf("Voting for %s", request.CandidateName)
+			if DEBUG {
+				log.Printf("Voting for %s", request.CandidateName)
+			}
 			return
 		}
 	}

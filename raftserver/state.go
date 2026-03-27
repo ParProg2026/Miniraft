@@ -80,7 +80,9 @@ func (s *RaftServer) becomeLeader() {
 		s.NextIndex[i] = len(s.Log) + 1
 		s.MatchIndex[i] = 0
 	}
-	log.Printf("Yipee")
+	if DEBUG {
+		log.Printf("Yipee")
+	}
 }
 
 func (s *RaftServer) HandleIncomingMessage(packet *IncomingPacket) {

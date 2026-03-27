@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const DEBUG = false
+
 func main() {
 	if len(os.Args) != 3 {
 		fmt.Printf("Usage: %s <server-host:server-port> <filename>\n", os.Args[0])
@@ -17,16 +19,12 @@ func main() {
 	identity := os.Args[1]
 	peersFile := os.Args[2]
 
-	//var hash int64
-	//for _, c := range identity {
-	//	hash += int64(c)
-	//}
-	//rand.Seed(time.Now().UnixNano() + hash)
-
 	fmt.Printf("Starting Raft server %s using peers config %s...\n", identity, peersFile)
 
 	peers := readPeersConfig(peersFile, identity)
-	fmt.Printf("Discovered peers: %v\n", peers)
+	if DEBUG {
+		fmt.Printf("Discovered peers: %v\n", peers)
+	}
 
 	network := &NetworkManager{
 		Peers: peers,
@@ -81,7 +79,9 @@ func main() {
 		}
 	}()
 
-	log.Println("Node is online and entering event loop.")
+	if DEBUG {
+		log.Println("Node is online and entering event loop.")
+	}
 	for {
 		select {
 		case packet := <-packetCh:
