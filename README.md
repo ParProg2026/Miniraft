@@ -2,6 +2,7 @@
 
 You can find the overall project structure in the next section.
 The documentation is part of the comments inside the code itself.
+Another version tailored to the is in the pdf [CADP___MiniRaft.pdf](CADP___MiniRaft.pdf).
 
 #### Project Structure
 
