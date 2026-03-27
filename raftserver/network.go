@@ -75,7 +75,7 @@ func (nm *NetworkManager) BroadcastRaftMessage(payload any) {
 // ListenLoop continuously reads from the UDP connection, decodes incoming bytes,
 // and dispatches the structured packets via the provided callback.
 // It strictly adheres to the Single Responsibility Principle by offloading all
-// state management and timeouts to the central event loop in main.go.
+// state management and timeouts to the central event loop in raftserver.go.
 func (nm *NetworkManager) ListenLoop(packetHandler func(*IncomingPacket)) {
 	buffer := make([]byte, MaxPacketSize)
 

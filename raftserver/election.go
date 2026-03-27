@@ -34,7 +34,7 @@ func (s *RaftServer) sendHeartbeats() {
 	if s.State != Leader {
 		return
 	}
-	
+
 	for i, peer := range s.Peers {
 		s.sendAppendEntries(i, peer)
 	}
