@@ -19,6 +19,8 @@ type ClientCommand struct {
 	Command string `json:"Command"`
 }
 
+const DEBUG = false
+
 // main is the primary entry point for the Raft client.
 // It initializes the UDP connection and processes standard input in a continuous loop.
 func main() {
@@ -94,7 +96,9 @@ func main() {
 		if err != nil {
 			log.Printf("Failed to send command to server: %v\n", err)
 		} else {
-			fmt.Printf("-> Transmitted: %s\n", string(payloadBytes))
+			if DEBUG {
+				fmt.Printf("-> Transmitted: %s\n", string(payloadBytes))
+			}
 		}
 	}
 
