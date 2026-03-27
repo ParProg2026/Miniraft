@@ -6,3 +6,5 @@
 !raftserver/*.go
 !data/
 !config/
+!CADP___MiniRaft.pdf
+!report.tex
